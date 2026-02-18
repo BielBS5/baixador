@@ -6,75 +6,68 @@ import zipfile
 import json
 from io import BytesIO
 
-st.set_page_config(page_title="Rádio Hub Console", page_icon="📻", layout="wide")
+st.set_page_config(page_title="Rádio Hub Premium", page_icon="📻", layout="wide")
 
 TEMP_DIR = "temp_radio"
 LISTA_SALVA = "fila_radio.json"
 
-if not os.path.exists(TEMP_DIR):
-    os.makedirs(TEMP_DIR)
+if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
 
-# --- FUNÇÕES DE MEMÓRIA ---
-def carregar_fila():
-    if os.path.exists(LISTA_SALVA):
-        try:
-            with open(LISTA_SALVA, "r") as f: return json.load(f)
-        except: return []
-    return []
-
-def salvar_fila(fila):
-    with open(LISTA_SALVA, "w") as f:
-        json.dump(fila, f)
-
+# --- INICIALIZAÇÃO DE MEMÓRIA (ESTADO) ---
 if 'fila_nuvem' not in st.session_state:
-    st.session_state.fila_nuvem = carregar_fila()
+    if os.path.exists(LISTA_SALVA):
+        with open(LISTA_SALVA, "r") as f: st.session_state.fila_nuvem = json.load(f)
+    else: st.session_state.fila_nuvem = []
+
+# Mantém o texto do lote e busca salvos para não sumir ao clicar
+if 'texto_lote' not in st.session_state: st.session_state.texto_lote = ""
+if 'busca_termo' not in st.session_state: st.session_state.busca_termo = ""
+
+def salvar_fila():
+    with open(LISTA_SALVA, "w") as f: json.dump(st.session_state.fila_nuvem, f)
 
 # --- MODAL MODO JOCA ---
 @st.dialog("Configurar Música")
 def modal_confirmacao(video_info):
     st.write(f"### 🎵 {video_info.get('title')}")
     st.audio(video_info.get('url'), format="audio/mp3")
-    nome_final = st.text_input("Nome do arquivo:", value=video_info.get('title'))
-    if st.button("✅ SALVAR NA FILA", use_container_width=True, type="primary"):
-        st.session_state.fila_nuvem.append({'titulo': nome_final, 'link': video_info.get('webpage_url') or video_info.get('url')})
-        salvar_fila(st.session_state.fila_nuvem)
+    nome_f = st.text_input("Nome do arquivo:", value=video_info.get('title'))
+    if st.button("✅ ADICIONAR", use_container_width=True, type="primary"):
+        st.session_state.fila_nuvem.append({'titulo': nome_f, 'link': video_info.get('webpage_url') or video_info.get('url')})
+        salvar_fila()
         st.rerun()
 
-# --- INTERFACE PRINCIPAL ---
 st.title("📻 Console Rádio Hub 24h")
 
 tab_joca, tab_lote, tab_extrair = st.tabs(["⭐ MODO JOCA", "🚀 LOTE AVANÇADO", "📋 EXTRAIR NOMES"])
 
 # --- ABA 1: MODO JOCA ---
 with tab_joca:
-    with st.form("busca_joca", clear_on_submit=True):
-        entrada = st.text_input("Buscar música ou link:")
-        btn_busca = st.form_submit_button("🔍 PESQUISAR", use_container_width=True)
-
-    if btn_busca and entrada:
+    # Usamos o value do session_state para o texto não sumir
+    busca = st.text_input("Buscar música:", value=st.session_state.busca_termo)
+    st.session_state.busca_termo = busca
+    
+    if st.button("🔍 PESQUISAR", use_container_width=True):
         with st.spinner("Buscando..."):
-            try:
-                with yt_dlp.YoutubeDL({'format':'bestaudio','quiet':True,'default_search':'ytsearch1','noplaylist':True}) as ydl:
-                    info = ydl.extract_info(entrada, download=False)
-                    video = info['entries'][0] if 'entries' in info else info
-                    modal_confirmacao(video)
-            except: st.error("Erro ao buscar.")
+            with yt_dlp.YoutubeDL({'format':'bestaudio','quiet':True,'default_search':'ytsearch1','noplaylist':True}) as ydl:
+                info = ydl.extract_info(busca, download=False)
+                modal_confirmacao(info['entries'][0] if 'entries' in info else info)
 
     if st.session_state.fila_nuvem:
         st.divider()
-        c_t, c_l = st.columns([3, 1])
-        c_t.subheader(f"📋 Sua Lista ({len(st.session_state.fila_nuvem)})")
-        if c_l.button("🗑️ LIMPAR TUDO"):
-            st.session_state.fila_nuvem = []; salvar_fila([]); st.rerun()
+        c1, c2 = st.columns([3, 1])
+        c1.subheader(f"📋 Fila ({len(st.session_state.fila_nuvem)})")
+        if c2.button("🗑️ LIMPAR TUDO"):
+            st.session_state.fila_nuvem = []; salvar_fila(); st.rerun()
 
         for idx, m in enumerate(st.session_state.fila_nuvem):
             with st.container(border=True):
                 col_m, col_b = st.columns([5, 1])
                 col_m.write(f"🎵 {m['titulo']}")
                 if col_b.button("❌", key=f"del_{idx}"):
-                    st.session_state.fila_nuvem.pop(idx); salvar_fila(st.session_state.fila_nuvem); st.rerun()
+                    st.session_state.fila_nuvem.pop(idx); salvar_fila(); st.rerun()
 
-        if st.button("🚀 PREPARAR ZIP DA FILA", type="primary", use_container_width=True):
+        if st.button("🚀 GERAR ZIP DA FILA", type="primary", use_container_width=True):
             if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)
             os.makedirs(TEMP_DIR)
             pb = st.progress(0)
@@ -90,15 +83,18 @@ with tab_joca:
             buf = BytesIO()
             with zipfile.ZipFile(buf, "w") as z:
                 for arq in os.listdir(TEMP_DIR): z.write(os.path.join(TEMP_DIR, arq), arq)
-            st_txt.success("✅ Pacote pronto!")
-            st.download_button("💾 BAIXAR ZIP DA FILA", buf.getvalue(), file_name="fila_joca.zip", mime="application/zip", use_container_width=True)
+            st_txt.success("✅ Pronto!")
+            st.download_button("💾 BAIXAR ZIP", buf.getvalue(), file_name="radio_joca.zip", use_container_width=True)
 
 # --- ABA 2: LOTE AVANÇADO ---
 with tab_lote:
     st.subheader("Processamento em Massa")
-    lista_txt = st.text_area("Cole a lista (um por linha):", height=200, placeholder="Música 1\nMúsica 2\nLink do YT...")
-    if st.button("🔥 PROCESSAR LOTE EM ZIP", use_container_width=True):
-        musicas = [l.strip() for l in lista_txt.split('\n') if l.strip()]
+    # Texto salvo no session_state para não sumir ao clicar em baixar
+    txt_area = st.text_area("Cole sua lista:", value=st.session_state.texto_lote, height=200)
+    st.session_state.texto_lote = txt_area
+    
+    if st.button("🔥 BAIXAR TUDO EM ZIP", use_container_width=True):
+        musicas = [l.strip() for l in txt_area.split('\n') if l.strip()]
         if musicas:
             if os.path.exists(TEMP_DIR): shutil.rmtree(TEMP_DIR)
             os.makedirs(TEMP_DIR)
@@ -117,18 +113,17 @@ with tab_lote:
             with zipfile.ZipFile(buf_l, "w") as z:
                 for arq in os.listdir(TEMP_DIR): z.write(os.path.join(TEMP_DIR, arq), arq)
             st_l.success("✅ Lote pronto!")
-            st.download_button("💾 BAIXAR ZIP DO LOTE", buf_l.getvalue(), file_name="lote_radio.zip", mime="application/zip", use_container_width=True)
+            st.download_button("💾 SALVAR ZIP DO LOTE", buf_l.getvalue(), file_name="lote_radio.zip", use_container_width=True)
 
 # --- ABA 3: EXTRAIR NOMES ---
 with tab_extrair:
     st.subheader("Extrair nomes de Playlist")
     url_p = st.text_input("Link da Playlist:")
-    if st.button("GERAR LISTA .TXT"):
-        with st.spinner("Lendo playlist..."):
-            try:
-                with yt_dlp.YoutubeDL({'extract_flat':True,'quiet':True}) as ydl:
-                    res = ydl.extract_info(url_p, download=False)
-                    txt = "\n".join([f"{e['title']}" for e in res['entries'] if e])
-                    st.download_button("💾 BAIXAR NOMES.TXT", txt, file_name="lista_playlist.txt")
-                    st.text_area("Prévia:", txt, height=200)
-            except: st.error("Erro ao ler playlist.")
+    if st.button("GERAR LISTA"):
+        with st.spinner("Lendo..."):
+            with yt_dlp.YoutubeDL({'extract_flat':True,'quiet':True}) as ydl:
+                res = ydl.extract_info(url_p, download=False)
+                nomes = "\n".join([f"{e['title']}" for e in res['entries'] if e])
+                st.session_state.texto_lote = nomes # Já joga pra aba de Lote automaticamente!
+                st.success("Nomes extraídos e enviados para a aba LOTE!")
+                st.text_area("Resultado:", nomes, height=200)
