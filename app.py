@@ -2,9 +2,7 @@ import streamlit as st
 import yt_dlp
 import os
 import re
-import json
-import pandas as pd  # Adicionado para suportar CSV
-from datetime import datetime
+import pandas as pd
 import threading
 from pathlib import Path
 
@@ -18,291 +16,179 @@ st.set_page_config(
 )
 
 # ─────────────────────────────────────────
-#  CSS PERSONALIZADO (Mantido original)
+#  CSS PERSONALIZADO (Visual Minimalista)
 # ─────────────────────────────────────────
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
-
-    html, body, [class*="css"] {
-        font-family: 'Syne', sans-serif;
-    }
-    .stApp {
-        background: #f7f4f0;
-        color: #1a1a1a;
-    }
-    h1, h2, h3 {
-        font-family: 'Syne', sans-serif !important;
-        letter-spacing: -0.5px;
-        color: #1a1a1a;
-    }
+    html, body, [class*="css"] { font-family: 'Syne', sans-serif; }
+    .stApp { background: #f7f4f0; color: #1a1a1a; }
     .radio-header {
         background: linear-gradient(135deg, #fff8f2 0%, #ffe8d0 100%);
         border: 1.5px solid #e05a00;
         border-radius: 12px;
         padding: 1.5rem 2rem;
         margin-bottom: 1.5rem;
-        display: flex;
-        align-items: center;
-        gap: 1rem;
     }
-    .radio-title {
-        font-size: 2rem;
-        font-weight: 800;
-        color: #e05a00;
-        margin: 0;
-        line-height: 1;
-    }
-    .radio-subtitle {
-        font-family: 'Space Mono', monospace;
-        color: #a0795a;
-        font-size: 0.75rem;
-        margin-top: 0.25rem;
-    }
-    .queue-item {
-        background: #ffffff;
-        border: 1px solid #e8e0d8;
-        border-left: 3px solid #e05a00;
-        border-radius: 8px;
-        padding: 0.75rem 1rem;
-        margin-bottom: 0.5rem;
-        color: #1a1a1a;
-    }
-    .badge {
-        background: #e05a00;
-        color: #fff;
-        font-family: 'Space Mono', monospace;
-        font-size: 0.65rem;
-        font-weight: 700;
-        padding: 2px 8px;
-        border-radius: 20px;
-    }
-    .hist-item {
-        background: #ffffff;
-        border: 1px solid #e8e0d8;
-        border-radius: 8px;
-        padding: 0.6rem 1rem;
-        margin-bottom: 0.35rem;
-        font-family: 'Space Mono', monospace;
-        font-size: 0.75rem;
-        color: #888;
-    }
-    .hist-item span { color: #1a1a1a; }
-    .stButton > button {
-        font-family: 'Syne', sans-serif !important;
-        font-weight: 700;
-    }
-    .stTabs [data-baseweb="tab"] {
-        font-family: 'Space Mono', monospace;
-        font-size: 0.8rem;
-        color: #888;
-    }
-    .stTabs [aria-selected="true"] {
-        color: #e05a00 !important;
-        border-bottom-color: #e05a00 !important;
-    }
+    .radio-title { font-size: 2rem; font-weight: 800; color: #e05a00; margin: 0; }
+    .stButton > button { font-family: 'Syne', sans-serif !important; font-weight: 700; width: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────
-#  SESSION STATE
-# ─────────────────────────────────────────
-if 'fila' not in st.session_state:
-    st.session_state.fila = []
-if 'downloads_ativos' not in st.session_state:
-    st.session_state.downloads_ativos = []
-
-# ─────────────────────────────────────────
-#  CONSTANTES
+#  CONSTANTES E SESSION STATE
 # ─────────────────────────────────────────
 DOWNLOAD_DIR = str(Path.home() / "Downloads")
 
+if 'fila' not in st.session_state:
+    st.session_state.fila = []
+
 # ─────────────────────────────────────────
-#  HELPERS
+#  FUNÇÕES DE AUXÍLIO (HELPERS)
 # ─────────────────────────────────────────
 def sanitizar_nome(nome: str) -> str:
-    return re.sub(r'[\\/*?:"<>|]', "", nome).strip()
+    return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
-def extrair_url_stream(video: dict) -> str | None:
-    url_direta = video.get('url')
-    if url_direta:
-        return url_direta
-    formats = video.get('formats', [])
-    audio_formats = [f for f in formats if f.get('acodec') != 'none' and f.get('vcodec') == 'none']
-    if audio_formats:
-        audio_formats.sort(key=lambda f: f.get('abr') or 0, reverse=True)
-        return audio_formats[0].get('url')
-    return None
-
-def buscar_info_video(entrada: str) -> dict | None:
-    opts = {'format': 'bestaudio/best', 'quiet': True, 'no_warnings': True, 'default_search': 'ytsearch1', 'noplaylist': True, 'skip_download': True}
-    with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(entrada, download=False)
-        return info['entries'][0] if info and 'entries' in info else info
-
-def baixar_musica(link: str, titulo: str, qualidade: str) -> bool:
+def baixar_musica(termo_ou_link, titulo, qualidade='320'):
+    """Faz o download via link direto ou busca no YouTube."""
     nome_arquivo = sanitizar_nome(titulo)
+    
+    # Se não for um link HTTP, adiciona o prefixo de busca para evitar erros
+    input_final = termo_ou_link.strip()
+    if not input_final.startswith('http'):
+        input_final = f"ytsearch1:{input_final}"
+
     opts = {
         'format': 'bestaudio/best',
         'ffmpeg_location': './ffmpeg.exe',
-        'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': qualidade}],
+        'postprocessors': [{
+            'key': 'FFmpegExtractAudio',
+            'preferredcodec': 'mp3',
+            'preferredquality': qualidade
+        }],
         'outtmpl': f'{DOWNLOAD_DIR}/{nome_arquivo}.%(ext)s',
         'quiet': True,
         'no_warnings': True,
+        'nocheckcertificate': True,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([link])
+            ydl.download([input_final])
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Erro no download: {e}")
         return False
 
-def adivinhar_artista_titulo(video: dict) -> tuple[str, str]:
-    artista = video.get('artist') or video.get('creator') or ''
-    titulo  = video.get('track') or ''
-    if artista and titulo: return artista.strip(), titulo.strip()
-    titulo_bruto = video.get('title', '')
-    if ' - ' in titulo_bruto:
-        partes = titulo_bruto.split(' - ', 1)
-        return partes[0].strip(), partes[1].strip()
-    return '', titulo_bruto.strip()
-
-@st.dialog("🎵 Confirmar música", width="large")
-def modal_confirmacao(video: dict):
-    thumb = video.get('thumbnail')
-    duracao = video.get('duration', 0)
-    mins, secs = divmod(int(duracao or 0), 60)
-    artista_inicial, titulo_inicial = adivinhar_artista_titulo(video)
-
-    col_img, col_audio = st.columns([1, 2])
-    with col_img:
-        if thumb: st.image(thumb, width='stretch')
-    with col_audio:
-        st.markdown(f"### {video.get('title', '')}")
-        st.caption(f"⏱ {mins}:{secs:02d}")
-        stream_url = extrair_url_stream(video)
-        if stream_url: st.audio(stream_url, format="audio/webm")
-
-    st.divider()
-    valor_padrao = f"{artista_inicial} - {titulo_inicial}" if artista_inicial else titulo_inicial
-    nome_final = st.text_input("✏️ Nome do arquivo:", value=valor_padrao)
-    
-    col_fila, col_baixar, col_cancel = st.columns([2, 2, 1])
-    if col_fila.button("➕ Adicionar na fila", width='stretch'):
-        st.session_state.fila.append({'titulo': nome_final.strip(), 'link': video.get('webpage_url', ''), 'qualidade': '320'})
-        st.rerun()
-    if col_baixar.button("⬇️ Baixar agora", width='stretch', type="primary"):
-        with st.spinner("Baixando..."):
-            if baixar_musica(video.get('webpage_url', ''), nome_final.strip(), '320'):
-                st.success("✅ Salvo!")
-                st.rerun()
-    if col_cancel.button("✖", width='stretch'): st.rerun()
-
-# ─────────────────────────────────────────
-#  THREADS & CABEÇALHO
-# ─────────────────────────────────────────
-_downloads_global = {}
-_downloads_lock = threading.Lock()
-
-st.markdown("""<div class="radio-header"><div><div class="radio-title">📻 RÁDIO HUB</div><div class="radio-subtitle">CONSOLE DE TRANSMISSÃO // DOWNLOAD MANAGER v2.0</div></div></div>""", unsafe_allow_html=True)
-
-col_m1, _ = st.columns([1, 3])
-col_m1.metric("🎵 Na fila", len(st.session_state.fila))
-
-def _worker_download(dl_id, link, titulo, qualidade):
-    with _downloads_lock: _downloads_global[dl_id] = {'titulo': titulo, 'status': 'baixando', 'pct': 0}
-    def hook(d):
-        if d['status'] == 'downloading':
-            total = d.get('total_bytes') or d.get('total_bytes_estimate') or 1
-            with _downloads_lock: _downloads_global[dl_id]['pct'] = int((d.get('downloaded_bytes', 0) / total) * 100)
-    
-    opts = {'format': 'bestaudio/best', 'ffmpeg_location': './ffmpeg.exe', 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': qualidade}], 'outtmpl': f'{DOWNLOAD_DIR}/{sanitizar_nome(titulo)}.%(ext)s', 'quiet': True, 'progress_hooks': [hook]}
+def buscar_info_video(entrada: str) -> dict | None:
+    opts = {
+        'format': 'bestaudio/best',
+        'quiet': True,
+        'no_warnings': True,
+        'default_search': 'ytsearch1',
+        'noplaylist': True,
+        'skip_download': True,
+    }
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl: ydl.download([link])
-        with _downloads_lock: _downloads_global[dl_id]['status'] = 'ok'
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(entrada, download=False)
+            if not info: return None
+            return info['entries'][0] if 'entries' in info else info
     except:
-        with _downloads_lock: _downloads_global[dl_id]['status'] = 'erro'
-
-def iniciar_download_paralelo(link, titulo, qualidade):
-    import uuid
-    dl_id = str(uuid.uuid4())[:8]
-    threading.Thread(target=_worker_download, args=(dl_id, link, titulo, qualidade), daemon=True).start()
-    return dl_id
+        return None
 
 # ─────────────────────────────────────────
-#  TABS (Com a nova aba CSV)
+#  INTERFACE PRINCIPAL
 # ─────────────────────────────────────────
-tab_joca, tab_solo, tab_lote, tab_playlist, tab_csv = st.tabs([
-    "🎵 Buscar e Baixar", "⚡ Baixar Vários", "📋 Lista Manual", "🔗 Playlist YT", "📂 Arquivo CSV"
-])
+st.markdown("""
+<div class="radio-header">
+    <div class="radio-title">📻 RÁDIO HUB</div>
+    <div style="color: #a0795a; font-family: 'Space Mono'; font-size: 0.8rem;">SISTEMA DE DOWNLOADS // CELERON OPTIMIZED</div>
+</div>
+""", unsafe_allow_html=True)
 
-# ABA 1: Buscar e Baixar
-with tab_joca:
-    st.markdown("### 🎵 Qual música você quer baixar?")
-    entrada = st.text_input("Buscar música:", placeholder="Ex: Legião Urbana Tempo Perdido", key="in_joca", label_visibility="collapsed")
-    if st.button("🔍 BUSCAR", type="primary", width='stretch'):
-        video = buscar_info_video(entrada)
-        if video: modal_confirmacao(video)
+tabs = st.tabs(["🔍 Buscar", "📋 Lista Manual", "🔗 Playlist YT", "📂 Arquivo CSV"])
 
-    if st.session_state.fila:
-        st.divider()
-        if st.button("🚀 BAIXAR TODA A FILA", type="primary", width='stretch'):
-            for m in st.session_state.fila: baixar_musica(m['link'], m['titulo'], m['qualidade'])
-            st.session_state.fila = []; st.rerun()
+# --- TAB 1: BUSCAR E BAIXAR ---
+with tabs[0]:
+    entrada = st.text_input("O que você quer ouvir?", placeholder="Nome da música ou Link do YouTube")
+    if st.button("BUSCAR MÚSICA", type="primary"):
+        if entrada:
+            with st.spinner("Buscando..."):
+                video = buscar_info_video(entrada)
+                if video:
+                    st.image(video.get('thumbnail'), width=200)
+                    st.write(f"**Título:** {video.get('title')}")
+                    if st.button("CONFIRMAR E BAIXAR"):
+                        if baixar_musica(video.get('webpage_url'), video.get('title')):
+                            st.success("Download Concluído!")
+                else:
+                    st.error("Não encontrei nada.")
 
-# ABA 2: Vários ao mesmo tempo
-with tab_solo:
-    st.markdown("### ⚡ Multi-Download")
-    ent_s = st.text_input("Música:", key="in_solo")
-    if st.button("⚡ INICIAR", type="primary"):
-        v = buscar_info_video(ent_s)
-        if v:
-            art, tit = adivinhar_artista_titulo(v)
-            dl_id = iniciar_download_paralelo(v['webpage_url'], f"{art} - {tit}" if art else tit, '320')
-            if 'solo_ids' not in st.session_state: st.session_state.solo_ids = []
-            st.session_state.solo_ids.append(dl_id)
+# --- TAB 2: LISTA MANUAL ---
+with tabs[1]:
+    lista_texto = st.text_area("Cole aqui vários nomes ou links (um por linha):", height=150)
+    if st.button("BAIXAR LISTA INTEIRA"):
+        linhas = [l.strip() for l in lista_texto.split('\n') if l.strip()]
+        prog = st.progress(0)
+        for i, linha in enumerate(linhas):
+            st.write(f"📥 Baixando: {linha}")
+            baixar_musica(linha, linha)
+            prog.progress((i + 1) / len(linhas))
+        st.success("Toda a lista foi processada!")
 
-    for did in st.session_state.get('solo_ids', []):
-        with _downloads_lock: info = _downloads_global.get(did)
-        if info:
-            st.write(f"**{info['titulo']}** - {info['status']} ({info.get('pct', 0)}%)")
-            st.progress(info.get('pct', 0) / 100)
+# --- TAB 3: PLAYLIST ---
+with tabs[2]:
+    url_pl = st.text_input("Link da Playlist do YouTube:")
+    if st.button("BAIXAR PLAYLIST COMPLETA"):
+        if url_pl:
+            with st.spinner("Isso pode demorar um pouco..."):
+                opts_pl = {
+                    'format': 'bestaudio/best',
+                    'ffmpeg_location': './ffmpeg.exe',
+                    'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'}],
+                    'outtmpl': f'{DOWNLOAD_DIR}/%(playlist_title)s/%(title)s.%(ext)s',
+                }
+                with yt_dlp.YoutubeDL(opts_pl) as ydl:
+                    ydl.download([url_pl])
+                st.success("Playlist salva na pasta Downloads!")
 
-# ABA 3: Lista Manual
-with tab_lote:
-    lista_texto = st.text_area("Uma música por linha:", height=150)
-    if st.button("⬇️ BAIXAR TUDO", type="primary"):
-        for l in lista_texto.split('\n'):
-            if l.strip(): baixar_musica(l.strip(), l.strip(), '320')
-
-# ABA 4: Playlist
-with tab_playlist:
-    url_pl = st.text_input("Link da Playlist:")
-    if st.button("⬇️ BAIXAR PLAYLIST", type="primary"):
-        opts = {'format': 'bestaudio/best', 'ffmpeg_location': './ffmpeg.exe', 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '320'}], 'outtmpl': f'{DOWNLOAD_DIR}/%(playlist_title)s/%(title)s.%(ext)s'}
-        with yt_dlp.YoutubeDL(opts) as ydl: ydl.download([url_pl])
-
-# ══════════════════════════════════════════
-#  ABA 5 — ARQUIVO CSV (EXPORTIFY)
-# ══════════════════════════════════════════
-with tab_csv:
-    st.markdown("### 📂 Importar do Exportify (CSV)")
-    st.caption("Arraste o arquivo CSV aqui para baixar a lista completa.")
-    arq_csv = st.file_uploader("Arquivo CSV", type=["csv"], label_visibility="collapsed")
+# --- TAB 4: ARQUIVO CSV (Exportify) ---
+with tabs[3]:
+    st.markdown("### 📂 Importar do Exportify / Spotify")
+    arq_csv = st.file_uploader("Arraste seu arquivo .csv aqui", type=["csv"])
     
     if arq_csv:
-        df = pd.read_csv(arq_csv)
-        st.write(f"📊 Encontrei **{len(df)}** músicas.")
-        if st.button("🚀 BAIXAR LISTA CSV", type="primary", width='stretch'):
-            prog = st.progress(0)
-            for i, row in df.iterrows():
-                # Tenta pegar URL, se não tiver, monta o nome para busca
-                link = row.get('Track URL') or row.get('URL')
-                nome = row.get('Track Name') or row.get('name') or "Musica"
-                art = row.get('Artist Name(s)') or row.get('artists') or ""
-                termo = link if link else f"{art} {nome}"
+        try:
+            df = pd.read_csv(arq_csv)
+            st.info(f"Encontrei {len(df)} músicas no arquivo.")
+            
+            if st.button("🚀 INICIAR DOWNLOAD DO CSV"):
+                barra = st.progress(0)
+                status = st.empty()
                 
-                st.caption(f"Baixando: {art} - {nome}")
-                baixar_musica(termo, f"{art} - {nome}", '320')
-                prog.progress((i+1)/len(df))
-            st.success("✅ Concluído!")
+                for i, row in df.iterrows():
+                    # Extração inteligente de colunas (Exportify usa Track URL e Track Name)
+                    link = str(row.get('Track URL', '')).strip()
+                    nome = str(row.get('Track Name', '')).strip()
+                    artista = str(row.get('Artist Name(s)', '')).strip()
+                    
+                    # Define o que será usado para baixar
+                    # Se tiver link, usa o link. Se não, busca por "Artista - Música"
+                    if link.startswith('http'):
+                        alvo = link
+                    else:
+                        alvo = f"{artista} {nome}"
+                    
+                    nome_limpo = f"{artista} - {nome}" if artista else nome
+                    
+                    status.caption(f"📥 Baixando ({i+1}/{len(df)}): {nome_limpo}")
+                    baixar_musica(alvo, nome_limpo)
+                    barra.progress((i + 1) / len(df))
+                
+                status.empty()
+                st.success("✅ Arquivo CSV processado com sucesso!")
+        except Exception as e:
+            st.error(f"Erro ao ler o arquivo: {e}")
+
+st.divider()
+st.caption(f"📁 Os arquivos serão salvos em: {DOWNLOAD_DIR}")
