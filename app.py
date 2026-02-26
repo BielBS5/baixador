@@ -3,110 +3,101 @@ import yt_dlp
 import os
 import re
 import pandas as pd
+import shutil
 from pathlib import Path
 
-# Configuração para rodar leve no Celeron do utilizador (via Nuvem)
-st.set_page_config(page_title="Rádio Hub - TuneMyMusic", page_icon="📻", layout="wide")
+# Configuração
+st.set_page_config(page_title="Rádio Hub - Download em Massa", page_icon="📻", layout="wide")
 
-# Pasta temporária no servidor do Streamlit Cloud
-TMP_DIR = "/tmp/downloads"
-if not os.path.exists(TMP_DIR):
-    os.makedirs(TMP_DIR)
+# Pasta temporária para o ZIP
+TMP_DOWNLOADS = "/tmp/radio_hub_batch"
 
-# CSS Minimalista
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;700;800&display=swap');
-    .stApp { background: #f7f4f0; }
-    .radio-header { 
-        background: linear-gradient(135deg, #fff8f2 0%, #ffe8d0 100%); 
-        border: 1.5px solid #e05a00; 
-        border-radius: 12px; padding: 20px; margin-bottom: 20px; 
-    }
-    .radio-title { font-size: 2rem; font-weight: 800; color: #e05a00; margin: 0; }
-</style>
-""", unsafe_allow_html=True)
+def limpar_pasta():
+    if os.path.exists(TMP_DOWNLOADS):
+        shutil.rmtree(TMP_DOWNLOADS)
+    os.makedirs(TMP_DOWNLOADS)
 
 def sanitizar(nome):
     return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
 
-def baixar_na_nuvem(termo_busca, nome_arquivo):
+def baixar_musica_servidor(termo, nome_arquivo):
     nome_limpo = sanitizar(nome_arquivo)
-    caminho_mp3 = os.path.join(TMP_DIR, f"{nome_limpo}.mp3")
-    
-    # Se não for link direto, força a busca no YouTube
-    alvo = termo_busca.strip()
-    if not alvo.startswith('http'):
-        alvo = f"ytsearch1:{alvo}"
-
     opts = {
         'format': 'bestaudio/best',
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '192',
+            'preferredquality': '128', # 128kbps para o ZIP não ficar gigante e baixar rápido
         }],
-        'outtmpl': os.path.join(TMP_DIR, f"{nome_limpo}.%(ext)s"),
+        'outtmpl': f'{TMP_DOWNLOADS}/{nome_limpo}.%(ext)s',
         'quiet': True,
         'no_warnings': True,
     }
-
     try:
+        # Se não for link, busca no YouTube
+        alvo = termo if termo.startswith('http') else f"ytsearch1:{termo}"
         with yt_dlp.YoutubeDL(opts) as ydl:
             ydl.download([alvo])
-        return caminho_mp3
-    except Exception as e:
-        st.error(f"Erro ao processar {nome_arquivo}: {e}")
-        return None
+        return True
+    except:
+        return False
 
 # --- INTERFACE ---
-st.markdown('<div class="radio-header"><div class="radio-title">📻 RÁDIO HUB (TUNE MY MUSIC)</div></div>', unsafe_allow_html=True)
+st.title("📻 Rádio Hub - Batch Downloader")
+st.info("💡 Perfeito para CSV do TuneMyMusic ou Exportify")
 
-tabs = st.tabs(["🔍 Busca Simples", "📂 CSV do TuneMyMusic"])
+# Upload do Arquivo
+arquivo = st.file_uploader("Suba seu arquivo CSV", type="csv")
 
-with tabs[0]:
-    txt_busca = st.text_input("Nome da música ou Link:")
-    if st.button("PREPARAR MP3", type="primary"):
-        with st.spinner("A gerar ficheiro..."):
-            path = baixar_na_nuvem(txt_busca, txt_busca)
-            if path and os.path.exists(path):
-                with open(path, "rb") as f:
-                    st.download_button("💾 DESCARREGAR AGORA", f, file_name=os.path.basename(path))
+if arquivo:
+    try:
+        df = pd.read_csv(arquivo)
+        # Identifica as colunas do TuneMyMusic ou Exportify
+        col_musica = next((c for c in df.columns if c.lower() in ['track', 'name', 'track name']), None)
+        col_artista = next((c for c in df.columns if c.lower() in ['artist', 'artist name(s)', 'artist name']), None)
+        col_url = next((c for c in df.columns if 'url' in c.lower()), None)
 
-with tabs[1]:
-    st.markdown("### Importar Lista CSV")
-    st.caption("Compatível com TuneMyMusic (Colunas: Artist, Track)")
-    
-    ficheiro = st.file_uploader("Sobe o teu CSV aqui", type="csv")
-    
-    if ficheiro:
-        try:
-            df = pd.read_csv(ficheiro)
+        if not col_musica:
+            st.error("Não encontrei a coluna de nome da música no CSV.")
+        else:
             st.success(f"Encontrei {len(df)} músicas!")
             
-            # O TuneMyMusic costuma usar 'Artist' e 'Track'
-            # Criamos uma lista para o utilizador escolher o que baixar
-            for i, row in df.iterrows():
-                # Tenta colunas do TuneMyMusic ou nomes genéricos
-                artista = row.get('Artist') or row.get('artist') or ""
-                musica = row.get('Track') or row.get('track') or row.get('Name') or "Musica"
-                url = row.get('URL') or row.get('url') or f"{artista} {musica}"
+            if st.button(f"🚀 BAIXAR TODAS AS {len(df)} MÚSICAS E GERAR ZIP"):
+                limpar_pasta()
+                progresso = st.progress(0)
+                status = st.empty()
                 
-                label_exibicao = f"{artista} - {musica}" if artista else musica
+                sucessos = 0
+                for i, row in df.iterrows():
+                    m_nome = str(row[col_musica])
+                    m_art = str(row[col_artista]) if col_artista else ""
+                    m_url = str(row[col_url]) if col_url and str(row[col_url]).startswith('http') else f"{m_art} {m_nome}"
+                    
+                    titulo_full = f"{m_art} - {m_nome}" if m_art else m_nome
+                    status.write(f"⏳ Processando ({i+1}/{len(df)}): {titulo_full}")
+                    
+                    if baixar_musica_servidor(m_url, titulo_full):
+                        sucessos += 1
+                    
+                    progresso.progress((i + 1) / len(df))
                 
-                col_nome, col_btn = st.columns([4, 1])
-                col_nome.write(f"🎵 {label_exibicao}")
+                # Criar o ZIP
+                status.write("📦 Criando arquivo ZIP...")
+                shutil.make_archive("/tmp/radio_hub_musicas", 'zip', TMP_DOWNLOADS)
                 
-                # Botão único para cada música (melhor para a RAM do teu Celeron)
-                if col_btn.button("Preparar", key=f"btn_{i}"):
-                    with st.spinner("A processar..."):
-                        path = baixar_na_nuvem(url, label_exibicao)
-                        if path:
-                            with open(path, "rb") as f:
-                                st.download_button("✅ Download", f, file_name=os.path.basename(path), key=f"dl_{i}")
-        
-        except Exception as e:
-            st.error(f"Erro ao ler o CSV: {e}")
+                with open("/tmp/radio_hub_musicas.zip", "rb") as f:
+                    st.download_button(
+                        label="💾 BAIXAR TUDO AGORA (.ZIP)",
+                        data=f,
+                        file_name="minhas_musicas.zip",
+                        mime="application/zip",
+                        type="primary"
+                    )
+                st.balloons()
+                st.success(f"Pronto! {sucessos} músicas foram incluídas no ZIP.")
 
-st.divider()
-st.info("Dica: No Streamlit Cloud, é melhor baixar uma de cada vez para não estourar o limite de memória do servidor gratuito.")
+    except Exception as e:
+        st.error(f"Erro ao ler CSV: {e}")
+
+st.markdown("---")
+st.caption("Nota: O download em massa na nuvem pode demorar dependendo do tamanho da lista. Recomendado até 50-100 músicas por vez.")
