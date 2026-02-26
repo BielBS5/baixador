@@ -1,110 +1,95 @@
 import streamlit as st
 import yt_dlp
 import os
-import re
 import pandas as pd
 import shutil
-from pathlib import Path
+import time
 
-# Configuração para o seu X515MA (Celeron N4020) rodando via Nuvem
-st.set_page_config(page_title="Rádio Hub - Spotify Library", page_icon="📻", layout="wide")
+# Configuração da página
+st.set_page_config(page_title="Rádio Hub - Fix 403", page_icon="📻")
 
-# Pasta temporária no servidor Linux da nuvem
 TMP_DIR = "/tmp/downloads_radio"
 
-def limpar_pasta():
+def preparar_pasta():
     if os.path.exists(TMP_DIR):
         shutil.rmtree(TMP_DIR)
     os.makedirs(TMP_DIR)
 
-def sanitizar(nome):
-    return re.sub(r'[\\/*?:"<>|]', "", str(nome)).strip()
-
-def baixar_musica_cloud(termo_busca, nome_arquivo):
-    nome_limpo = sanitizar(nome_arquivo)
+def baixar_musica_safe(termo, nome_arquivo):
+    caminho_final = os.path.join(TMP_DIR, f"{nome_arquivo}.mp3")
     
-    # OPÇÕES ANTI-BLOQUEIO (Para evitar o Erro 403)
-    opts = {
+    # OPÇÕES PARA CONTORNAR O ERRO 403
+    ydl_opts = {
         'format': 'bestaudio/best',
+        'noplaylist': True,
         'postprocessors': [{
             'key': 'FFmpegExtractAudio',
             'preferredcodec': 'mp3',
-            'preferredquality': '320', # 128kbps é mais rápido para o seu Celeron processar depois
+            'preferredquality': '320',
         }],
-        'outtmpl': f"{TMP_DIR}/{nome_limpo}.%(ext)s",
+        'outtmpl': f"{TMP_DIR}/{nome_arquivo}.%(ext)s",
+        # Configurações Críticas para a Nuvem:
         'quiet': True,
         'no_warnings': True,
         'nocheckcertificate': True,
-        # O segredo para evitar o 403 é fingir que é um navegador real:
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'ignoreerrors': True,
+        'source_address': '0.0.0.0', # Força usar IPv4 (ajuda no 403)
+        'default_search': 'ytsearch1',
     }
 
     try:
-        # Se não for link, faz a busca
-        alvo = termo_busca if termo_busca.startswith('http') else f"ytsearch1:{termo_busca}"
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([alvo])
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            # Tenta baixar
+            ydl.download([termo])
         return True
     except Exception as e:
-        print(f"Erro no download: {e}")
+        st.error(f"Erro no YouTube: {e}")
         return False
 
-# --- INTERFACE ---
-st.title("📻 Rádio Hub - My Spotify Library")
-st.markdown(f"Focado no arquivo: `{os.path.basename('My Spotify Library.csv')}`")
+# --- UI ---
+st.title("📻 Rádio Hub - Versão Anti-Bloqueio")
+st.warning("⚠️ Se o erro 403 persistir, o YouTube bloqueou temporariamente o IP da nuvem. Tente novamente em alguns minutos.")
 
-arquivo_csv = st.file_uploader("Suba o seu arquivo CSV do Spotify", type=["csv"])
+uploaded_file = st.file_uploader("Suba o seu 'My Spotify Library.csv'", type="csv")
 
-if arquivo_csv:
-    try:
-        # Lendo o CSV com as colunas do seu arquivo
-        df = pd.read_csv(arquivo_csv)
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+    
+    # Verifica se as colunas batem com o seu arquivo
+    if 'Track name' in df.columns:
+        st.write(f"Músicas prontas: {len(df)}")
         
-        # Mapeamento exato das colunas do seu arquivo
-        # 'Track name' e 'Artist name'
-        if 'Track name' in df.columns and 'Artist name' in df.columns:
-            st.success(f"✅ Arquivo lido! {len(df)} músicas encontradas.")
+        # Como o seu notebook tem 4GB de RAM, vamos baixar em blocos menores
+        tamanho_lista = st.slider("Quantas músicas baixar da lista?", 1, len(df), 20)
+        
+        if st.button(f"🚀 INICIAR DOWNLOAD DE {tamanho_lista} MÚSICAS"):
+            preparar_pasta()
+            prog = st.progress(0)
+            status = st.empty()
             
-            if st.button(f"🚀 BAIXAR TUDO E GERAR ZIP"):
-                limpar_pasta()
-                progresso = st.progress(0)
-                status = st.empty()
+            sucessos = 0
+            # Processa apenas a quantidade selecionada no slider
+            for i in range(tamanho_lista):
+                row = df.iloc[i]
+                nome_musica = str(row['Track name'])
+                nome_artista = str(row['Artist name']) if 'Artist name' in row else ""
+                busca = f"{nome_artista} {nome_musica}"
                 
-                sucessos = 0
-                for i, row in df.iterrows():
-                    musica = str(row['Track name'])
-                    artista = str(row['Artist name'])
-                    nome_completo = f"{artista} - {musica}"
-                    
-                    status.write(f"📥 Processando ({i+1}/{len(df)}): **{nome_completo}**")
-                    
-                    # Tenta baixar
-                    if baixar_musica_cloud(nome_completo, nome_completo):
-                        sucessos += 1
-                    
-                    progresso.progress((i + 1) / len(df))
+                status.write(f"📥 A baixar ({i+1}/{tamanho_lista}): {busca}")
                 
-                # Criar o ZIP para o usuário baixar de uma vez
-                if sucessos > 0:
-                    status.write("📦 Criando pacote ZIP...")
-                    shutil.make_archive("/tmp/musicas_radio", 'zip', TMP_DIR)
-                    
-                    with open("/tmp/musicas_radio.zip", "rb") as f:
-                        st.download_button(
-                            label="💾 DESCARREGAR TODAS AS MÚSICAS (.ZIP)",
-                            data=f,
-                            file_name="minha_biblioteca_mp3.zip",
-                            mime="application/zip",
-                            type="primary"
-                        )
-                    st.balloons()
-                else:
-                    st.error("Nenhuma música pôde ser baixada. O YouTube bloqueou o servidor (Erro 403).")
-        else:
-            st.error("O CSV subido não tem as colunas 'Track name' e 'Artist name'.")
-
-    except Exception as e:
-        st.error(f"Erro ao processar o arquivo: {e}")
-
-st.divider()
-st.caption("Dica: Se der erro 403, tente baixar em horários diferentes ou com menos músicas no CSV.")
+                if baixar_musica_safe(busca, busca):
+                    sucessos += 1
+                
+                # Pequena pausa para não ser banido pelo YouTube
+                time.sleep(1) 
+                prog.progress((i + 1) / tamanho_lista)
+            
+            # ZIP
+            if sucessos > 0:
+                status.write("📦 A criar ZIP...")
+                shutil.make_archive("/tmp/musicas", 'zip', TMP_DIR)
+                with open("/tmp/musicas.zip", "rb") as f:
+                    st.download_button("💾 DESCARREGAR ZIP", f, file_name="minhas_musicas.zip")
+                st.balloons()
+            else:
+                st.error("O YouTube bloqueou todas as tentativas. Tente trocar o nome do arquivo ou fazer Reboot no Streamlit Cloud.")
